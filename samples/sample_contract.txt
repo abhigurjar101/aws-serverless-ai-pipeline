@@ -1,0 +1,18 @@
+MASTER SERVICES & CLOUD LICENSING AGREEMENT
+
+This Master Services Agreement ("Agreement") is entered into as of January 15, 2026, by and between Enterprise AI Global Inc. ("Provider") and Apex Financial Corp. ("Client").
+
+1. SCOPE OF SERVICES
+Provider will deliver managed retrieval-augmented generation (RAG) pipelines, serverless vector search infrastructure, and autonomous agent orchestration as outlined in specific Statements of Work. All services will adhere to industry best practices and maintain 99.9% uptime SLA.
+
+2. PAYMENT TERMS & PRICING
+Client agrees to pay invoices within net thirty (30) calendar days from receipt. All payments shall be made in USD via electronic wire transfer. Unpaid balances past forty-five (45) days shall incur a late charge of 1.5% per month.
+
+3. TERM AND TERMINATION
+This Agreement shall commence on the Effective Date and continue for an initial period of twelve (12) months. Either party may terminate this Agreement without cause upon giving thirty (30) days prior written notice. In the event of material breach, the non-breaching party may terminate immediately if such breach remains uncured for ten (10) business days following written notice.
+
+4. CONFIDENTIALITY AND PROPRIETARY DATA
+Each party agrees that all technical architecture diagrams, proprietary algorithms, client records, and API credentials disclosed during this engagement constitute Confidential Information. Each party shall safeguard such information using the same degree of care it employs for its own trade secrets, but no less than reasonable care. These confidentiality covenants survive termination for five (5) full years.
+
+5. SECURITY, ENCRYPTION & SOC2 COMPLIANCE
+Provider guarantees that all customer data ingested into the pipeline shall be encrypted at rest using AES-256 and encrypted in transit via TLS 1.3 protocol. Provider shall undergo annual SOC 2 Type II audits conducted by an independent certified CPA firm and provide summary reports upon Client request.

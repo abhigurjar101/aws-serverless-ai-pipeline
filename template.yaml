@@ -1,0 +1,121 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  AWS Serverless AI Document Intelligence Pipeline
+  Orchestrated by Abhi Gurjar. Event-driven S3 ingestion, DynamoDB audit indexing,
+  and API Gateway with AWS Bedrock LLM generation.
+
+Globals:
+  Function:
+    Timeout: 60
+    MemorySize: 512
+    Runtime: python3.11
+    Environment:
+      Variables:
+        DOCUMENT_TABLE_NAME: !Ref DocumentAuditTable
+        BEDROCK_CHAT_MODEL: anthropic.claude-3-5-sonnet-20240620-v1:0
+        BEDROCK_EMBED_MODEL: amazon.titan-embed-text-v1
+
+Resources:
+  # 1. Document Upload S3 Bucket
+  DocumentIngestBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # 2. DynamoDB Audit & Metadata Ledger
+  DocumentAuditTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: EnterpriseDocumentAudit
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: doc_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: doc_id
+          KeyType: HASH
+
+  # 3. S3 Event-Driven Ingestion Lambda
+  IngestProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: lambdas/
+      Handler: ingest_handler.lambda_handler
+      Description: Chunks uploaded documents from S3 and stores embeddings
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref DocumentIngestBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DocumentAuditTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: "*"
+      Events:
+        DocumentUploadEvent:
+          Type: S3
+          Properties:
+            Bucket: !Ref DocumentIngestBucket
+            Events: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: incoming/
+
+  # 4. HTTP Query API Gateway & Lambda Handler
+  HttpQueryApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowMethods:
+          - POST
+          - OPTIONS
+        AllowHeaders:
+          - Content-Type
+          - Authorization
+        AllowOrigins:
+          - "*"
+
+  QueryProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: lambdas/
+      Handler: query_handler.lambda_handler
+      Description: Queries Bedrock LLM with grounding citations
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref DocumentAuditTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: "*"
+      Events:
+        ApiQueryEvent:
+          Type: HttpApi
+          Properties:
+            Path: /query
+            Method: POST
+            ApiId: !Ref HttpQueryApi
+
+Outputs:
+  ApiEndpoint:
+    Description: "HTTP API Gateway endpoint URL for document querying"
+    Value: !Sub "https://${HttpQueryApi}.execute-api.${AWS::Region}.amazonaws.com/query"
+  IngestBucketName:
+    Description: "Target S3 bucket for incoming enterprise documents"
+    Value: !Ref DocumentIngestBucket
+  DynamoDBTableName:
+    Description: "DynamoDB Audit Table for indexed metadata"
+    Value: !Ref DocumentAuditTable
