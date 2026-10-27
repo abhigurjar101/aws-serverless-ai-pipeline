@@ -1,126 +1,49 @@
-# AWS Serverless AI Document Intelligence Pipeline ☁️⚡
+# Serverless document-processing prototype
 
-> **An enterprise-grade, event-driven RAG knowledge pipeline built on AWS Serverless architecture and Amazon Bedrock Foundation Models by Abhi Gurjar.**
+An AWS SAM architecture exercise with S3-triggered ingestion, a DynamoDB metadata audit, and an HTTP query handler. The offline demonstration chunks sample text, computes deterministic hash vectors, ranks supplied passages by token overlap, and returns excerpts with source names.
 
----
-
-## 💡 What Is This Project? (Explained Like a Human)
-
-Imagine a hospital network or financial law firm with 50,000 PDF contracts, medical reports, and policy guidelines. Whenever an employee or doctor has a question—like *"What is our policy for patient data breach notification?"* or *"What are the termination penalties in Vendor Contract 4?"*—someone has to manually read dozens of pages.
-
-Traditionally, companies spun up expensive cloud virtual machines (EC2 instances) running 24/7. Even when nobody was searching at 3 AM on a Sunday, those servers cost thousands of dollars every month.
-
-**This project solves that using AWS Serverless.**
-- When you drop a document into an **Amazon S3** cloud bucket, AWS automatically wakes up a lightweight **AWS Lambda** function.
-- It parses the document, creates smart semantic paragraphs, converts them into mathematical embeddings (using **Amazon Bedrock Titan**), and logs the audit trail into **Amazon DynamoDB**.
-- When a user asks a question via **Amazon API Gateway**, another Lambda function retrieves the exact relevant paragraphs and feeds them to **Amazon Bedrock (Claude 3.5 Sonnet)** to generate a cited, factual answer in milliseconds.
-- When nobody is using it, **the entire system costs \$0.00**. You only pay for the exact milliseconds used during an active upload or query!
-
----
-
-## 🏛️ System Architecture
-
-```
-[ Incoming PDF / Text ]
-         │
-         ▼
- ┌───────────────┐        S3 PutObject Event
- │   Amazon S3   │ ─────────────────────────────────► ┌───────────────────────────┐
- │ Ingest Bucket │                                    │   Ingest Lambda Function  │
- └───────────────┘                                    └─────────────┬─────────────┘
-                                                                    │ Chunks & Embeddings
-                                                                    ▼
-                                                      ┌───────────────────────────┐
-                                                      │  Amazon DynamoDB & Vector │
-                                                      │        Audit Store        │
-                                                      └─────────────▲─────────────┘
-                                                                    │
-                                                           Context Retrieval
-                                                                    │
- ┌───────────────┐        POST /query                 ┌─────────────┴─────────────┐
- │ User / Client │ ─────────────────────────────────► │   API Gateway + Query     │
- │  Application  │ ◄───────────────────────────────── │      Lambda Handler       │
- └───────────────┘       Grounded Cited Answer        └─────────────┬─────────────┘
-                                                                    │ Prompt + Verified Context
-                                                                    ▼
-                                                      ┌───────────────────────────┐
-                                                      │  Amazon Bedrock (Claude)  │
-                                                      └───────────────────────────┘
-```
-
----
-
-## ✨ Core Engineering Highlights
-
-1. **Zero-Server Maintenance**: Built 100% on AWS Serverless primitives (`AWS::Serverless-2016-10-31`). No Linux server patching, no container orchestration headaches.
-2. **True Event-Driven Ingestion**: Leverages native S3 bucket triggers (`s3:ObjectCreated:*`) so data is indexed the instant it touches cloud storage.
-3. **Enterprise Defense-in-Depth Security**:
-   - AES-256 S3 bucket server-side encryption with public access blocked.
-   - Granular AWS IAM least-privilege roles for Lambda execution.
-   - TLS 1.3 encryption in transit across all API endpoints.
-4. **Pay-Per-Request DynamoDB**: Serverless On-Demand billing mode eliminates provisioned capacity bottlenecks.
-5. **Zero-Cloud-Cost Local Simulation**: Includes a standalone Python runner (`client/test_pipeline.py`) that simulates the full S3 and Bedrock pipeline locally without needing an active AWS credit card!
-
----
-
-## 🚀 How to Run the Pipeline in 5 Seconds
-
-### 1. Test Locally (Zero Setup / Free)
-Clone the repository and run the test harness:
+## Run without AWS
 
 ```bash
 git clone https://github.com/abhigurjar101/aws-serverless-ai-pipeline.git
 cd aws-serverless-ai-pipeline
-
-# Run the local verification runner
 python3 client/test_pipeline.py
+python3 -m unittest discover -s tests -v
 ```
 
-You will see:
-- Document chunking and embedding simulation.
-- 3 real enterprise queries evaluated against the contract.
-- Sub-10ms response latency with exact document section citations.
+Local mode is the default, even when boto3 is installed. It constructs no AWS clients. The demonstration runner prints examples; the separate test suite makes assertions. Hash vectors are test fixtures, not semantic embeddings. Recorded local elapsed time does not measure deployed AWS or model inference latency.
 
-### 2. Deploy Live to AWS (Using AWS SAM CLI)
-To deploy this infrastructure live into your AWS account:
+## Architecture and implementation boundary
 
-```bash
-# Build the serverless application
-sam build
-
-# Deploy with guided CloudFormation prompts
-sam deploy --guided
+```text
+S3 object -> ingest Lambda -> text chunks + optional Titan call
+                         -> DynamoDB metadata audit
+HTTP POST /query -> caller-supplied documents -> lexical ranking
+                                             -> excerpts or optional Bedrock generation
 ```
 
-AWS SAM will provision:
-- S3 Bucket (`enterprise-rag-incoming-bucket`)
-- DynamoDB Audit Table (`EnterpriseDocumentAudit`)
-- 2 Lambda Functions (`IngestProcessorFunction`, `QueryProcessorFunction`)
-- API Gateway HTTP API endpoint
+The audit table stores metadata, not a searchable vector index. Query does not retrieve previously uploaded S3 documents. The handlers expect UTF-8 text, not PDFs. There is no end-to-end persistent RAG index, authentication, scale test, or deployment evidence in this repository.
 
----
+## Optional AWS experiment
 
-## 📁 Repository Structure
+AWS mode requires boto3, configured credentials, region-specific Bedrock model access and `USE_REAL_AWS_BEDROCK=true` in the Lambda environment. Build with AWS SAM and inspect the generated CloudFormation before deploying. `template.yaml` defines the bucket, metadata table, two functions, and HTTP API. `requirements.txt` is at the repository root; package boto3 with the Lambda code or use the runtime SDK intentionally. The template does not enable live Bedrock calls by default.
 
-```
-aws-serverless-ai-pipeline/
-├── template.yaml                  # AWS SAM Infrastructure-as-Code specification
-├── lambdas/
-│   ├── ingest_handler.py          # S3 event listener, chunker & embedding generator
-│   └── query_handler.py           # API Gateway HTTP POST handler & Bedrock synthesis
-├── client/
-│   └── test_pipeline.py           # Local end-to-end event simulator
-├── samples/
-│   └── sample_contract.txt        # Enterprise MSA test contract
-├── requirements.txt               # Dependencies (boto3, botocore, pytest)
-└── README.md                      # You are here! Simple human documentation
+Review IAM scope, API authentication, storage, model permissions and retention before using real documents. AWS storage, requests, logs, and model calls can incur charges; this project does not claim zero idle cost. Remote failures propagate rather than silently reporting a successful synthetic result.
+
+## Request example
+
+```json
+{"question":"When are invoices due?","documents":[{"source":"sample.txt","text":"Invoices are due after seven days."}]}
 ```
 
----
+Malformed JSON and invalid request shapes return 400. No-overlap queries return no evidence. Local answers quote supplied passages; they are not generated legal conclusions. Remaining work includes persistent retrieval, ingestion idempotency, authorization, prompt-injection evaluation, deployment validation and benchmarked retrieval quality.
 
-## 👤 Author
+## Structure
 
-**Abhi Gurjar**  
-- Portfolio: [abhigurjar.vercel.app](https://abhigurjar.vercel.app)  
-- GitHub: [@abhigurjar101](https://github.com/abhigurjar101)  
-- LinkedIn: [Abhi Gurjar](https://in.linkedin.com/in/abhi-gurjar-b13067203)
+- `lambdas/`: ingest and query handlers
+- `template.yaml`: prototype infrastructure
+- `samples/`: synthetic contract text
+- `client/test_pipeline.py`: offline demonstration
+- `tests/`: chunk bounds, network-free local mode, evidence grounding and validation
+
+[Abhi Kumar Gurjar](https://www.linkedin.com/in/abhigurjar)
