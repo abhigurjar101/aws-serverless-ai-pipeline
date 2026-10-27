@@ -50,9 +50,9 @@ def get_bedrock_embedding(bedrock_client, text: str) -> List[float]:
                 body=body
             )
             response_body = json.loads(response["body"].read())
-            return response_body.get("embedding", generate_local_embedding(text))
+            return response_body["embedding"]
         except Exception as e:
-            print(f"[WARN] Bedrock embedding call skipped ({e}). Falling back to deterministic local embedding.")
+            raise RuntimeError("Bedrock embedding failed") from e
     
     return generate_local_embedding(text)
 
@@ -62,43 +62,20 @@ def semantic_chunk_text(text: str, chunk_size: int = 350, overlap: int = 50) -> 
     Breaks raw document text into readable, context-preserving paragraph chunks
     with sliding window overlap so thoughts aren't cut in half.
     """
-    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-    if not paragraphs:
-        paragraphs = [text.strip()]
-
+    if (isinstance(chunk_size, bool) or not isinstance(chunk_size, int) or chunk_size <= 0
+            or isinstance(overlap, bool) or not isinstance(overlap, int) or not 0 <= overlap < chunk_size):
+        raise ValueError("Require chunk_size > 0 and 0 <= overlap < chunk_size")
+    words = text.split()
     chunks = []
-    chunk_index = 0
-    current_chunk = []
-    current_length = 0
-
-    for para in paragraphs:
-        para_len = len(para.split())
-        if current_length + para_len > chunk_size and current_chunk:
-            combined_text = " ".join(current_chunk)
-            chunks.append({
-                "chunk_id": chunk_index,
-                "text": combined_text,
-                "word_count": len(combined_text.split()),
-                "char_length": len(combined_text)
-            })
-            chunk_index += 1
-            # Keep the last paragraph for overlap context
-            current_chunk = current_chunk[-1:]
-            current_length = len(current_chunk[0].split())
-
-        current_chunk.append(para)
-        current_length += para_len
-
-    if current_chunk:
-        combined_text = " ".join(current_chunk)
-        chunks.append({
-            "chunk_id": chunk_index,
-            "text": combined_text,
-            "word_count": len(combined_text.split()),
-            "char_length": len(combined_text)
-        })
-
+    for start in range(0, len(words), chunk_size - overlap):
+        part = words[start:start + chunk_size]
+        combined = " ".join(part)
+        chunks.append({"chunk_id": len(chunks), "text": combined,
+                       "word_count": len(part), "char_length": len(combined)})
+        if start + chunk_size >= len(words):
+            break
     return chunks
+
 
 
 def lambda_handler(event, context):
@@ -108,9 +85,12 @@ def lambda_handler(event, context):
     print(f"Received event: {json.dumps(event)}")
     
     # Initialize AWS clients if available
-    s3_client = boto3.client("s3") if HAS_BOTO3 else None
-    bedrock_client = boto3.client("bedrock-runtime") if HAS_BOTO3 else None
-    dynamodb = boto3.resource("dynamodb") if HAS_BOTO3 else None
+    use_aws = os.environ.get("USE_REAL_AWS_BEDROCK", "false").lower() == "true"
+    if use_aws and not HAS_BOTO3:
+        raise RuntimeError("Install boto3 before enabling AWS mode")
+    s3_client = boto3.client("s3") if use_aws else None
+    bedrock_client = boto3.client("bedrock-runtime") if use_aws else None
+    dynamodb = boto3.resource("dynamodb") if use_aws else None
 
     results = []
 
@@ -129,8 +109,7 @@ def lambda_handler(event, context):
                 response = s3_client.get_object(Bucket=bucket, Key=key)
                 content = response["Body"].read().decode("utf-8", errors="ignore")
             except Exception as e:
-                print(f"Error fetching from S3: {e}")
-                content = record.get("mock_content", "Sample document content fallback.")
+                raise RuntimeError(f"Unable to read S3 object: {key}") from e
         else:
             content = record.get("mock_content", f"Enterprise operational document content for {key}.")
 
@@ -151,7 +130,7 @@ def lambda_handler(event, context):
             "filename": os.path.basename(key),
             "processed_at": int(time.time()),
             "chunk_count": len(chunks),
-            "status": "INDEXED_READY",
+            "status": "AUDIT_RECORDED" if use_aws else "LOCAL_DEMO",
             "chunks": processed_chunks
         }
 
@@ -165,10 +144,10 @@ def lambda_handler(event, context):
                     "filename": doc_record["filename"],
                     "processed_at": doc_record["processed_at"],
                     "chunk_count": doc_record["chunk_count"],
-                    "status": "INDEXED_READY"
+                    "status": "AUDIT_RECORDED"
                 })
             except Exception as e:
-                print(f"[WARN] DynamoDB write skipped: {e}")
+                raise RuntimeError("DynamoDB audit write failed") from e
 
         results.append(doc_record)
 

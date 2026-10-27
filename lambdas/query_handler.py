@@ -42,7 +42,7 @@ def retrieve_relevant_context(question: str, knowledge_base: List[Dict[str, Any]
         scored.append((score, item))
         
     scored.sort(key=lambda x: x[0], reverse=True)
-    return [item for score, item in scored[:top_k]]
+    return [item for score, item in scored[:top_k] if score > 0]
 
 
 def invoke_bedrock_llm(bedrock_client, prompt: str, system_prompt: str, question: str = "") -> str:
@@ -68,18 +68,10 @@ def invoke_bedrock_llm(bedrock_client, prompt: str, system_prompt: str, question
             response_body = json.loads(response["body"].read())
             return response_body["content"][0]["text"]
         except Exception as e:
-            print(f"[NOTE] Bedrock remote call skipped ({e}). Using local engine fallback.")
+            raise RuntimeError("Bedrock generation failed") from e
 
-    # Smart local extraction fallback for demonstration without live AWS bills
-    q = question.lower()
-    if "terminate" in q or "notice" in q:
-        return "According to Section 3 (Term and Termination), either party may terminate the Agreement without cause by giving at least thirty (30) days prior written notice. For material breaches, immediate termination is permitted after a 10 business day cure period."
-    elif "encryption" in q or "security" in q or "protocol" in q:
-        return "According to Section 5 (Security, Encryption & SOC2 Compliance), all customer data ingested into the pipeline is guaranteed to be encrypted at rest using AES-256 and in transit via TLS 1.3 protocol, with annual SOC 2 Type II audit certifications."
-    elif "late fee" in q or "unpaid" in q or "45 days" in q or "penalty" in q or "invoice" in q:
-        return "According to Section 2 (Payment Terms & Pricing), unpaid invoice balances past forty-five (45) days incur a late charge penalty of 1.5% per month."
-    else:
-        return f"Based on the verified retrieved document context, the agreement mandates strict compliance with stated terms and 5-year confidentiality covenants."
+    # The offline demonstration returns supplied evidence, never a canned factual answer.
+    return "Local extractive demonstration; relevant source excerpts follow:\n" + prompt
 
 
 def lambda_handler(event, context):
@@ -88,32 +80,27 @@ def lambda_handler(event, context):
     """
     start_time = time.time()
     
-    # Parse request body
+    def bad_request(message):
+        return {"statusCode": 400, "headers": {"Content-Type": "application/json"},
+                "body": json.dumps({"error": message})}
+
     body = event.get("body", {})
     if isinstance(body, str):
         try:
             body = json.loads(body)
-        except Exception:
-            body = {}
-
-    question = body.get("question", "What are the core contractual obligations?")
-    provided_context = body.get("documents", [
-        {
-            "id": "doc_section_01",
-            "source": "Master_Services_Agreement_2026.pdf",
-            "text": "Term and Termination: Either party may terminate this Agreement without cause by giving at least thirty (30) days prior written notice to the other party. Upon termination, all unpaid invoices become immediately due."
-        },
-        {
-            "id": "doc_section_02",
-            "source": "Master_Services_Agreement_2026.pdf",
-            "text": "Confidentiality: Recipient shall protect disclosing party's proprietary information with the same degree of care used for its own confidential assets, but not less than reasonable care. Obligations survive for 5 years."
-        },
-        {
-            "id": "doc_section_03",
-            "source": "Security_Compliance_Addendum.pdf",
-            "text": "Data Protection and Security: Service provider shall maintain SOC2 Type II compliance and implement AES-256 encryption for all data at rest and TLS 1.3 for data in transit."
-        }
-    ])
+        except (ValueError, TypeError):
+            return bad_request("body must be valid JSON")
+    if not isinstance(body, dict):
+        return bad_request("body must be a JSON object")
+    question = body.get("question")
+    provided_context = body.get("documents")
+    if not isinstance(question, str) or not question.strip():
+        return bad_request("question must be non-empty text")
+    if not isinstance(provided_context, list) or not all(
+        isinstance(item, dict) and isinstance(item.get("text"), str)
+        and isinstance(item.get("source"), str) for item in provided_context
+    ):
+        return bad_request("documents must be a list of objects with text and source strings")
 
     top_chunks = retrieve_relevant_context(question, provided_context, top_k=2)
     context_str = "\n\n".join([f"Source [{c.get('source')}]:\n{c.get('text')}" for c in top_chunks])
@@ -126,8 +113,16 @@ def lambda_handler(event, context):
     
     user_prompt = f"DOCUMENT CONTEXT:\n{context_str}\n\nUSER QUESTION:\n{question}\n\nANSWER:"
 
-    bedrock_client = boto3.client("bedrock-runtime") if HAS_BOTO3 else None
-    llm_answer = invoke_bedrock_llm(bedrock_client, user_prompt, system_instruction, question=question)
+    use_aws = os.environ.get("USE_REAL_AWS_BEDROCK", "false").lower() == "true"
+    if use_aws and not HAS_BOTO3:
+        raise RuntimeError("Install boto3 before enabling AWS mode")
+    bedrock_client = boto3.client("bedrock-runtime") if use_aws and top_chunks else None
+    if not top_chunks:
+        llm_answer = "No matching evidence was found in the supplied documents."
+    elif not use_aws:
+        llm_answer = "Local extractive demonstration:\n" + context_str
+    else:
+        llm_answer = invoke_bedrock_llm(bedrock_client, user_prompt, system_instruction, question=question)
     latency_ms = round((time.time() - start_time) * 1000, 2)
 
     response_payload = {
@@ -135,7 +130,7 @@ def lambda_handler(event, context):
         "answer": llm_answer,
         "retrieved_sources": [c.get("source") for c in top_chunks],
         "latency_ms": latency_ms,
-        "status": "SUCCESS"
+        "status": "SUCCESS" if use_aws else "LOCAL_DEMO"
     }
 
     return {
